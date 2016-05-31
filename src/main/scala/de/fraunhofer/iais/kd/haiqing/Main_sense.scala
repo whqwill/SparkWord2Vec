@@ -16,7 +16,7 @@ object Main_sense {
     val conf = new SparkConf().setAppName("Sense2Vec")
     if (!conf.contains("spark.master")) {
       conf.setMaster("local[*]")
-      conf.setMaster("local[4]")
+      conf.setMaster("local[1]")
     }
     val sc = new SparkContext(conf)
     println("sc.defaultParallelism=" + sc.defaultParallelism + "   " + sc.master)
@@ -39,8 +39,8 @@ object Main_sense {
     //val oneSense = true
     val softMax = false // softMax or sigmoid
     val modelPathMultiSense = if (args.length < 13) "" else args(12)
-    val modelSaveIter = if (oneSense) args(1).toInt*args(2).toInt else 20 // save the model after this number of iterations
-    println(modelSaveIter)
+    val modelSaveIter = Math.min(args(1).toInt*args(2).toInt,20) // save the model after this number of iterations
+    println("modelSaveIter="+modelSaveIter)
     val validationRation = 0.1f // max. fraction of data to use for validation
     val modelValidateIter = 2 //  validate the model after this number of iterations
     val validationRatio = 0.1f // maximum fraction of data to use for validation

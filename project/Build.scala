@@ -48,11 +48,11 @@ object Dependencies {
     val scalaIo       = "0.4.2"
   }
 
-  val sparkCore      = "org.apache.spark"         %% "spark-core" % Version.Spark
+  val sparkCore      = "org.apache.spark"         %% "spark-core" % Version.Spark % "provided"
   val sparkStreaming = "org.apache.spark"         %% "spark-streaming" % Version.Spark % "provided"
   val sparkRepl      = "org.apache.spark"         %% "spark-repl" % Version.Spark % "provided"
   val sparkSQL       = "org.apache.spark"         %% "spark-sql" % Version.Spark % "provided"
-  val sparkMllib     = "org.apache.spark"         %% "spark-mllib" % Version.Spark
+  val sparkMllib     = "org.apache.spark"         %% "spark-mllib" % Version.Spark % "provided"
   val junitNovocode  = "com.novocode"             %% "junit-interface" % "0.11" % "test->default"
 
   val scalaIO        = "com.github.scala-incubator.io" %% "scala-io-file" % Version.scalaIo  withSources() // GP

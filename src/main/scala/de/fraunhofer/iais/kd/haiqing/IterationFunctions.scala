@@ -313,6 +313,15 @@ class ModelConst(val window: Int, val vectorSize: Int, val maxNumSenses: Int,
     negs
   }
 
+  def initSenseCounts(numberOfSensesPerWord: Array[Int]): Array[Array[Int]] = {
+    val senseCount = new Array[Array[Int]](numberOfSensesPerWord.length) // an array of Int for the senses of each word
+    for (w <- 0 until numberOfSensesPerWord.length) {
+      senseCount(w) = new Array[Int](numberOfSensesPerWord(w)) // length of array = number of senses
+    }
+    senseCount
+  }
+
+
   /**
     * access functions
     *

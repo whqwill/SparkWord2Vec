@@ -1,6 +1,7 @@
 package de.fraunhofer.iais.kd.haiqing
 
 import java.io._
+import java.nio.file.{Files, Paths, Path}
 import java.util.Calendar
 
 import com.github.fommil.netlib.BLAS.{getInstance => blas}
@@ -651,8 +652,14 @@ class SenseAssignment(val inputFile: String,
 
     //val file = new PrintWriter(new File("./tmp.txt"))
     // ModelConst contains all constant structures of the model
-    val historyFileName: String = if (mc.oneSense) mc.modelPathOneSense + "/history.txt"
-    else mc.modelPathMultiSense + "/history.txt"
+    // new outputPath: new folder with original outputPath+parameters
+    val str = if (mc.oneSense) mc.modelPathOneSense else mc.modelPathMultiSense
+    val outputPath = str+"/"+Calendar.getInstance().getTime.toString.filter(x=>(x!=' ')).substring(3,8)+"-Para:"+numRDDs+","+numEpoch+","+minCount+","+mc.numNegative+","+mc.window+","+mc.vectorSize+","+freqThreshStr+","+mc.learningRate+","+mc.stepSize+","+local+","+numPartitions
+    val folderPath: Path = Paths.get(outputPath)
+    if (!Files.exists(folderPath))
+      Files.createDirectory(folderPath)
+
+    val historyFileName: String = outputPath + "/history.txt"
 
     val historyWriter = new PrintWriter(new File(historyFileName))
     val histHeader = Array("it", "valiLossPerPredict", "valiNumAdjustPerSentence")
@@ -682,64 +689,17 @@ class SenseAssignment(val inputFile: String,
       val numAdjustValiAcc = sc.accumulator(0l)
 
       //println("validationSet.count()=" + validationSet.count())
-
       //adjust sense assignment and calculate loss for validation set
       //println("iteration = " + it + "   indexRDD = " + indexRDD + " adjust sense assignment and calculate loss for " +
       //  "validation set...")
       val syn0Bc = sc.broadcast(syn0)
       val syn1Bc = sc.broadcast(syn1)
-      if (it == numIterations || it % mc.modelValidateIter == 0) {
-        /*----------------------------------------------------------------------- */
-        /*            adjust senses of validation set and compute loss            */
-        /*----------------------------------------------------------------------- */
-        validationSet = validationSet.mapPartitionsWithIndex { (idx, iterator) =>
-          val F = new ModelUpdater(mcBc.value, 578829 + idx, syn0Bc.value, syn1Bc.value)
 
-          //          val F = new ModelConst(window, vectorSize, maxNumSenses, numNegative, vocabSize, learningRate,null, null,
-          //            expTable, numberOfSensesPerWord, smoothedFrequencyLookupTable, syn0, syn1)
-          val newIter = mutable.MutableList[(Array[Int], Array[Array[Int]])]()
-          var lossVali = 0.0
-          var lossNumVali = 0
-          var numAdjust = 0
-          for ((sentence, sentenceNEG) <- iterator) {
-            if (!F.m.oneSense) {
-              var nadj = 0
-              while (!F.m.oneSense && nadj < F.m.maxAdjusting) {
-                val adjusted = F.adjustSentence(sentence, sentenceNEG) // change the word-senses of sent
-                if (adjusted) {
-                  nadj += 1
-                  numAdjust += 1
-                } else
-                  nadj = F.m.maxAdjusting
-              }
-            }
-            val (sentLoss, sentLossNum) = F.sentenceLoss(sentence, sentenceNEG)
-            lossVali += sentLoss
-            lossNumVali += sentLossNum
-            newIter += sentence -> sentenceNEG
-          }
-          lossValiAcc += lossVali
-          lossNumValiAcc += lossNumVali;
-          numAdjustValiAcc += numAdjust
-          newIter.toIterator
-        }.cache()
-        val sentenceNumValidation = validationSet.count()
-        val valiLossPerPredict = lossValiAcc.value / lossNumValiAcc.value
-        val valiNumAdjustPerSentence = numAdjustValiAcc.value * 1.0 / sentenceNumValidation
-        var st = stIter + "VALISET: lossPerPredict\t=" + mc.pp(valiLossPerPredict, "%10.6f")
-        st += " numPredict:=" + lossNumValiAcc.value
-        if (!mc.oneSense) st += " numAdjustPerSentence=" + mc.pp(valiNumAdjustPerSentence, "%10.6f")
-        if (printLv > 0)
-          println("--------------------------------------------------------------------------------------------------")
-        println(st)
-        hist(histPos("valiLossPerPredict")) = valiLossPerPredict
-        hist(histPos("valiNumAdjustPerSentence")) = valiNumAdjustPerSentence
-      }
       if (!mc.oneSense) {
         /*----------------------------------------------------------------------- */
         /*            adjust senses of training set RDD                           */
         /*----------------------------------------------------------------------- */
-        val senseCountAcc = sc.accumulator(initSenseCounts(mc.numberOfSensesPerWord))(CountArrAccumulatorParam)
+        val senseCountAcc = sc.accumulator(mc.initSenseCounts(mc.numberOfSensesPerWord))(CountArrAccumulatorParam)
         var numAdjustTrainAcc = sc.accumulator(0)
         val modelConst1Bc = sc.broadcast(mc)
         val seedTrainAdjustBc = sc.broadcast(seed + it * numPartitions + 9886) // always a different seed
@@ -747,7 +707,7 @@ class SenseAssignment(val inputFile: String,
         trainSet(indexRDD) = trainSet(indexRDD).mapPartitionsWithIndex { (idx, iter) =>
           val F = new ModelUpdater(modelConst1Bc.value, seedTrainAdjustBc.value + idx, syn0Bc.value, syn1Bc
             .value)
-          val senseCount = initSenseCounts(F.m.numberOfSensesPerWord)
+          val senseCount = F.m.initSenseCounts(F.m.numberOfSensesPerWord)
           // init senseCount
           val newIter = mutable.MutableList[Array[Int]]()
           for (sentence <- iter) {
@@ -919,28 +879,79 @@ class SenseAssignment(val inputFile: String,
         totalWordCount += wordCountTrainAcc.value
 
       }
+
+      if (it+1 == numIterations || it % mc.modelValidateIter == 0) {
+        /*----------------------------------------------------------------------- */
+        /*            adjust senses of validation set and compute loss            */
+        /*----------------------------------------------------------------------- */
+        validationSet = validationSet.mapPartitionsWithIndex { (idx, iterator) =>
+          val F = new ModelUpdater(mcBc.value, 578829 + idx, syn0Bc.value, syn1Bc.value)
+
+          //          val F = new ModelConst(window, vectorSize, maxNumSenses, numNegative, vocabSize, learningRate,null, null,
+          //            expTable, numberOfSensesPerWord, smoothedFrequencyLookupTable, syn0, syn1)
+          val newIter = mutable.MutableList[(Array[Int], Array[Array[Int]])]()
+          var lossVali = 0.0
+          var lossNumVali = 0
+          var numAdjust = 0
+          for ((sentence, sentenceNEG) <- iterator) {
+            if (!F.m.oneSense) {
+              var nadj = 0
+              while (!F.m.oneSense && nadj < F.m.maxAdjusting) {
+                val adjusted = F.adjustSentence(sentence, sentenceNEG) // change the word-senses of sent
+                if (adjusted) {
+                  nadj += 1
+                  numAdjust += 1
+                } else
+                  nadj = F.m.maxAdjusting
+              }
+            }
+            val (sentLoss, sentLossNum) = F.sentenceLoss(sentence, sentenceNEG)
+            lossVali += sentLoss
+            lossNumVali += sentLossNum
+            newIter += sentence -> sentenceNEG
+          }
+          lossValiAcc += lossVali
+          lossNumValiAcc += lossNumVali;
+          numAdjustValiAcc += numAdjust
+          newIter.toIterator
+        }.cache()
+        val sentenceNumValidation = validationSet.count()
+        val valiLossPerPredict = lossValiAcc.value / lossNumValiAcc.value
+        val valiNumAdjustPerSentence = numAdjustValiAcc.value * 1.0 / sentenceNumValidation
+        var st = stIter + "VALISET: lossPerPredict\t=" + mc.pp(valiLossPerPredict, "%10.6f")
+        st += " numPredict:=" + lossNumValiAcc.value
+        if (!mc.oneSense) st += " numAdjustPerSentence=" + mc.pp(valiNumAdjustPerSentence, "%10.6f")
+        if (printLv > 0)
+          println("--------------------------------------------------------------------------------------------------")
+        println(st)
+        hist(histPos("valiLossPerPredict")) = valiLossPerPredict
+        hist(histPos("valiNumAdjustPerSentence")) = valiNumAdjustPerSentence
+      }
+
       //println()
       //println("syn0(0)(0)(0)=" + syn0(0)(0)(0))
       //println("syn0Modify(0)(0)=" + syn0Modify(0)(0))
       //println("syn0Modify(0)(0)=" + syn0Modify(0)(0))
-      if (it+1 == numIterations || it > 0 && it+1 % mc.modelSaveIter == 0) {
+      println(" mc.modelSaveIter="+ mc.modelSaveIter)
+      println(" it="+it)
+      if (it+1 == numIterations || (it > 0 && (it % mc.modelSaveIter == 0))) {
         println(stIter + "saving model ...")
-        if (mc.oneSense)
-          writeToFile(mc.modelPathOneSense)
-        else
-          writeToFile(mc.modelPathMultiSense)
+        if (it+1 == numIterations) {
+          if (mc.oneSense)
+            writeToFile(outputPath, -1)
+          else
+            writeToFile(outputPath, -1)
+        }
+        else {
+          if (mc.oneSense)
+            writeToFile(outputPath, it)
+          else
+            writeToFile(outputPath, it)
+        }
       }
       historyWriter.write(hist.mkString(" ") + "\n")
     }
     historyWriter.close()
-  }
-
-  def initSenseCounts(numberOfSensesPerWord: Array[Int]): Array[Array[Int]] = {
-    val senseCount = new Array[Array[Int]](numberOfSensesPerWord.length) // an array of Int for the senses of each word
-    for (w <- 0 until numberOfSensesPerWord.length) {
-      senseCount(w) = new Array[Int](numberOfSensesPerWord(w)) // length of array = number of senses
-    }
-    senseCount
   }
 
   /**
@@ -948,9 +959,18 @@ class SenseAssignment(val inputFile: String,
     * wordIndex.txt : wordString_senNo
     * vectors.txt:
     *
-    * @param outputPath
+    * @param outputPathFather
     */
-  private def writeToFile(outputPath: String): Unit = {
+  private def writeToFile(outputPathFather: String, iter: Int): Unit = {
+
+    var outputPath = outputPathFather
+    if (iter >= 0) {
+      outputPath = outputPathFather + "/" + "iter" + iter
+      val folderPath: Path = Paths.get(outputPath)
+      if (!Files.exists(folderPath))
+        Files.createDirectory(folderPath)
+    }
+
     SenseAssignment.backupFile(outputPath + "/wordIndex.txt")
     SenseAssignment.backupFile(outputPath + "/vectors.txt")
 
@@ -997,274 +1017,7 @@ class SenseAssignment(val inputFile: String,
     synFile.close()
   }
 
-  /**
-    * check derivatives with finite differences
-    *
-    * @param textRDD
-    */
-  def checkDerivSigmoid(textRDD: RDD[String]) {
-    learnVocab(textRDD) // generates vocabulary
-    val rnd = new scala.util.Random(seed)
 
-    val (vocabSize, numberOfSensesPerWord) = createNumberOfSensePerWord(rnd) // senseTable has number of senses for each
-    // word
-    mc.setDictInfo(vocabSize, numberOfSensesPerWord, this.createMultinomFreqDistr())
-
-    val numericRDD: RDD[Array[Int]] = makeSentences(textRDD, rnd) // transform data to numeric
-    val tseed = 37
-
-    initSynLocalRandomly(rnd) // init embeddings
-
-    /*------- check conversion to and from BDV ---------*/
-    val prmVec0 = mc.syn2bdv(syn0, syn1)
-    val (syy0, syy1) = mc.bdv2syn(prmVec0)
-    println("check conversion to and from BDV = BreezeDenseVector")
-    for (iw <- 0 until syy0.length) {
-      for (is <- 0 until syy0(iw).length) {
-        for (i <- 0 until syy0(iw)(is).length) {
-          require(syy0(iw)(is)(i) == syn0(iw)(is)(i))
-          require(syy1(iw)(is)(i) == syn1(iw)(is)(i))
-        }
-      }
-    }
-
-    bdv2synLocal(prmVec0) // initialize syn0 and syn1
-    val sent0 = numericRDD.first() // select sentence for testing
-    for (pos <- 0 until math.min(sent0.length, 3)) {
-      val inpWs = sent0(pos)
-      val rnd0 = new Random(tseed)
-      val sent0NEG = mc.generateSentenceNEG(sent0, rnd0)
-      val modelUpd = new ModelUpdater(mc, seed, syn0, syn1)
-
-      // compute loss and derivative by analytical procedure
-      val (lossExact, derivExact) = modelUpd.getLossDerivSigmoid(inpWs, pos, sent0, sent0NEG, true)
-      println("SIGMOID: lossExact=" + lossExact)
-
-      val (syz0, syz1) = mc.bdv2syn(prmVec0) // initialize sy0 and sy1 from prmVec
-      val modelUpd1 = new ModelUpdater(mc, seed, syz0, syz1)
-      val (lossApprox, derivApprox) = modelUpd1.getLossDerivSigmoid(inpWs, pos, sent0, sent0NEG, false)
-      val lossDiff = math.abs(lossExact - lossApprox)
-      println("SIGMOID: lossApprox=" + lossApprox + " difference to exact value=" + lossDiff)
-      require(lossDiff < 0.001, "NOT lossDiff<0.001")
-
-      // compute maximum difference between analytical and approximate derivative
-      val parmNames = mc.bdv2names
-      var maxdiffApprox = 0.0
-      println("SIGMOID: name     prmVec       analyticalDeriv  approxDeriv     (analyticalDeriv-approxDeriv) ")
-      for (i <- 0 until derivExact.length) {
-        val dif = math.abs(derivExact(i) - derivApprox(i))
-        println(parmNames(i) + " " + mc.pp(prmVec0(i), "%10.6f") + "\t " + mc.pp(derivExact(i), "%10.6f") + "\t "
-          + mc.pp(derivApprox(i), "%10.6f") + "\t " + mc.pp(dif, "%10.6f"))
-        maxdiffApprox = math.max(maxdiffApprox, dif)
-      }
-      println("\n----- SIGMOID: maxdiff=" + maxdiffApprox + " between analytical and approximate derivative ------")
-      println()
-      require(maxdiffApprox < 0.1)
-
-      //---------------- check if analytical derivative is correct ------------
-      var func = (prmVec: BDV[Double]) => {
-        val (sy0, sy1) = mc.bdv2syn(prmVec) // initialize sy0 and sy1 from prmVec
-        val rnd = new Random(tseed)
-        val modelUpd1 = new ModelUpdater(mc, seed, sy0, sy1)
-        val (loss, deriv): (Double, Array[Float]) = modelUpd1.getLossDerivSigmoid(inpWs, pos, sent0, sent0NEG, true)
-        loss
-      }
-      val h = 0.001
-      val (finiteDiffApprox, gradComputeErr) = EmpiricalDerivative(func, prmVec0, h)
-
-      // compute maximum difference between analytical and finite difference approximation
-      var maxdiff = 0.0
-      println("SIGMOID: name     prmVec       analytical  finiteDiff     (derivExact-finitDiff) ")
-      for (i <- 0 until derivExact.length) {
-        val dif = math.abs(derivExact(i) - derivApprox(i))
-        println(parmNames(i) + " " + mc.pp(prmVec0(i), "%10.6f") + "\t " + mc.pp(derivExact(i), "%10.6f") + "\t "
-          + mc.pp(finiteDiffApprox(i), "%10.6f") + "\t " + mc.pp(dif, "%10.6f"))
-        maxdiff = math.max(maxdiff, dif)
-      }
-      println("\n----- SIGMOID: maxdiff=" + maxdiff + " with exact function"
-        + " between analytical deriv.and finite difference approximation ------")
-      println()
-      require(maxdiff < 0.1)
-
-      // check if subtracting derivative reduces loss
-      val prmVec2: BDV[Double] = prmVec0.map(x => x)
-      for (i <- 0 until prmVec2.length)
-        prmVec2(i) += -0.02 * derivExact(i)
-      val (sy0, sy1) = mc.bdv2syn(prmVec2) // initialize sy0 and sy1 from prmVec
-      val modelUpd2 = new ModelUpdater(mc, seed, sy0, sy1)
-      val (loss2, deriv2): (Double, Array[Float]) = modelUpd2.getLossDerivSigmoid(inpWs, pos, sent0, sent0NEG, true)
-      println("SIGMOID: loss0=" + lossExact + " before. loss2=" + loss2 + " after subtracting 0.02*deriv")
-      println(); require(loss2 < lossExact, "NOT loss2<loss0")
-
-      val alpha = 0.1f
-
-      //      val (lossApprox, derivApprox) = modelUpd.getLossDerivSigmoid(inpWs, pos, sent0, sent0NEG, false)
-      //      val (lossApprox1, derivApprox1) = modelUpd.getLoss(inpWs, pos, sent0, sent0NEG)
-      //      require(lossApprox1 == lossApprox, "getLoss: wrong loss")
-
-      val (loss00, n00) = modelUpd.learnWordSense(inpWs, pos, 0.0f, sent0, sent0NEG) //loss: no change of param
-      require(loss00 == lossApprox, loss00 + "=loss00!=lossApprox=" + lossApprox)
-      val n = 10
-      val lossArr = new Array[Double](n)
-      for (i <- 0 until n) {
-        val (lossA, nA) = modelUpd.learnWordSense(inpWs, pos, alpha, sent0, sent0NEG)
-        lossArr(i) = lossA
-      }
-      println("SIGMOID: lossExact \t=" + lossExact)
-      println("SIGMOID: lossApprox\t=" + lossApprox)
-      println("SIGMOID: loss00    \t=" + loss00 + "\t computed by learnWordSense")
-      for (i <- 0 until n) {
-        println(" loss(" + i + ")\t=" + lossArr(i) + "\t changing parameters by learnWordSense")
-        if (i > 0) require(lossArr(i - 1) > lossArr(i))
-      }
-      println("SIGMOID: finished pos=" + pos)
-    }
-  }
-
-
-  /**
-    * check derivatives with finite differences
-    *
-    * @param textRDD
-    */
-  def checkDerivSoftmax(textRDD: RDD[String]) {
-    learnVocab(textRDD) // generates vocabulary
-    val rnd = new scala.util.Random(seed)
-
-    val (vocabSize, numberOfSensesPerWord) = createNumberOfSensePerWord(rnd) // senseTable has number of senses for each
-    // word
-    mc.setDictInfo(vocabSize, numberOfSensesPerWord, this.createMultinomFreqDistr())
-
-    val numericRDD: RDD[Array[Int]] = makeSentences(textRDD, rnd) // transform data to numeric
-    val tseed = 37
-    val syy0 = mc.initSynRand(rnd)
-    val syy1 = mc.initSynRand(rnd)
-    val prmVec0 = mc.syn2bdv(syy0, syy1)
-
-    val prmVeca = prmVec0.map(x => 10.0 * x)
-    bdv2synLocal(prmVeca) // initialize syn0 and syn1
-
-    //--------------- check writing params to file
-
-    val folder: File = File.createTempFile("tempDir", null);
-    folder.delete()
-    folder.mkdir() // create temporary directory
-
-    val syn0Old = mc.synClone(syn0)
-    val syn1Old = mc.synClone(syn1)
-    writeToFile(folder.getCanonicalPath)
-
-    initSynFromFile(folder.getCanonicalPath, rnd)
-
-    mc.synEqual(syn0Old, syn0)
-    mc.synEqual(syn1Old, syn1)
-
-
-    //--------------- check derivatives
-
-    val sent0 = numericRDD.first()
-    for (pos <- 0 until math.min(3, sent0.length)) {
-      val inpWs = sent0(pos)
-      val rnd0 = new Random(tseed)
-      val sent0NEG = mc.generateSentenceNEG(sent0, rnd0)
-      val modelUpd = new ModelUpdater(mc, seed, syn0, syn1)
-      val (lossExact, derivExact): (Double, Array[Float]) = modelUpd.getLossDerivLogSoftmax(inpWs, pos, sent0, sent0NEG,
-        true)
-      println("SOFTMAX: lossExact=" + lossExact)
-
-      for (exact <- Array(true, false)) {
-        {
-          //--------------- check inner derivative
-          val z = BDV.fill[Double](4)(rnd.nextDouble() - 0.5)
-          //val zmx = Bmax(z)
-          //for(i<- 0 until z.length) z(i)-zmx
-          val x = z(0)
-          val y = z(1 until z.length).toArray
-          val (loss2, derX, derY) = modelUpd.logSoftmax(x, y, true)
-
-          var fct = (zz: BDV[Double]) => {
-            val xx = zz(0)
-            val yy = zz(1 until zz.length).toArray
-            val (loss, derivx, derivy) = modelUpd.logSoftmax(xx, yy, true)
-            loss
-          }
-
-          val h = 0.0001
-          val (grdVec, grdComputeErr) = EmpiricalDerivative(fct, z, h);
-          println("SOFTMAX: ")
-          println(derX + "\t " + grdVec(0) + "\t " + (derX - grdVec(0)));
-          var mxDiff = math.abs(derX - grdVec(0))
-          for (i <- 0 until derY.length) {
-            println(derY(i) + "\t " + grdVec(i + 1) + "\t " + (derY(i) - grdVec(i + 1)));
-            mxDiff = math.max(mxDiff, math.abs(derX - grdVec(0)))
-          }
-          println("SOFTMAX: inner derivative mxDiff=" + mxDiff)
-        }
-        {
-          //--------------- check full derivative
-          var func = (prmVec: BDV[Double]) => {
-            val (sy0, sy1) = mc.bdv2syn(prmVec) // initialize sy0 and sy1 from prmVec
-            val rnd = new Random(tseed)
-            val modelUpd1 = new ModelUpdater(mc, seed, sy0, sy1)
-            val (loss, deriv): (Double, Array[Float]) = modelUpd1.getLossDerivLogSoftmax(inpWs, pos, sent0, sent0NEG, exact)
-            loss
-          }
-
-          val h = 0.0001
-          val (gradVec, gradComputeErr) = EmpiricalDerivative(func, prmVeca, h)
-          //val (gradVec1, gradComputeErr1) = EmpDeriv.adaptiveStepsizeVec(func, initialWeights1, h, Nil)
-          var maxdiff = 0.0
-          val parmNames = mc.bdv2names
-          println("SOFTMAX:  name     prmVec  program   finiteDiff  difference with exact=" + exact)
-          for (i <- 0 until derivExact.length) {
-            println(parmNames(i) + " " + prmVeca(i) + "\t " + derivExact(i) + "\t " + gradVec(i) + "\t " + (derivExact(i) - gradVec(i)))
-            maxdiff = math.max(maxdiff, math.abs(derivExact(i) - gradVec(i)))
-          }
-          println("\n--------------------- SOFTMAX: full deriv maxdiff=" + maxdiff + " with exact=" + exact +
-            "--------------------------")
-          println()
-          require(maxdiff < 0.1 || !exact, "NOT maxdiff<0.1" + " with exact=" + exact)
-          // initialize sy0 and sy1 from prmVec
-          val (syz0, syz1) = mc.bdv2syn(prmVeca)
-          val modelUpd1 = new ModelUpdater(mc, seed, syz0, syz1)
-          val (loss1, deriv1): (Double, Array[Float]) = modelUpd1.getLossDerivLogSoftmax(inpWs, pos, sent0, sent0NEG, exact)
-
-          val prmVec2: BDV[Double] = prmVeca.map(x => x)
-          for (i <- 0 until prmVec2.length)
-            prmVec2(i) += -0.02 * deriv1(i)
-          // initialize sy0 and sy1 from prmVec
-          val (sy0, sy1) = mc.bdv2syn(prmVec2)
-          val modelUpd2 = new ModelUpdater(mc, seed, sy0, sy1)
-          val (loss2, deriv2): (Double, Array[Float]) = modelUpd2.getLossDerivLogSoftmax(inpWs, pos, sent0, sent0NEG, exact)
-          println("SOFTMAX: loss0=" + lossExact + " before. loss2=" + loss2 + " after subtracting 0.02*deriv with " +
-            "exact=" + exact)
-          require(lossExact > loss2, "NOT lossExact >loss2")
-        }
-        val alpha = 0.001f
-
-        val (lossApprox, derivApprox) = modelUpd.getLossDerivLogSoftmax(inpWs, pos, sent0, sent0NEG, false)
-        val (lossApprox1, derivApprox1) = modelUpd.getLoss(inpWs, pos, sent0, sent0NEG)
-        require(lossApprox1 == lossApprox, "getLoss: wrong loss")
-
-        val (loss00, n00) = modelUpd.learnWordSense(inpWs, pos, 0.0f, sent0, sent0NEG)
-        require(loss00 == lossApprox, loss00 + "=loss00!=lossApprox=" + lossApprox)
-        val n = 10
-        val lossArr = new Array[Double](n)
-        for (i <- 0 until n) {
-          val (lossA, nA) = modelUpd.learnWordSense(inpWs, pos, alpha, sent0, sent0NEG)
-          lossArr(i) = lossA
-        }
-        println(" lossExact \t=" + lossExact)
-        println(" lossApprox\t=" + lossApprox)
-        println(" loss00    \t=" + loss00 + "\t computed by learnWordSense")
-        for (i <- 0 until n) {
-          println(" loss(" + i + ")\t=" + lossArr(i) + "\t changing parameters by learnWordSense")
-          if (i > 0) require(lossArr(i - 1) > lossArr(i)) // require falling loss
-        }
-        println("SOFTMAX: finished pos=" + pos)
-      }
-    }
-  }
 
 }
 
