@@ -45,7 +45,7 @@ object Main_sense {
     val modelValidateIter = 2 //  validate the model after this number of iterations
     val validationRatio = 0.1f // maximum fraction of data to use for validation
     val maxValidationSize: Int = 10000 // maximum number of sentences for validation
-    val validationIsSubset = true // select validationset as subset of trainingssets
+    val validationIsSubset = false // select validationset as subset of trainingssets
     val maxEmbNorm = 5.0f
     val senseProbThresh = 0.02f // re-initialize embedding if senseProbability is lower
 
